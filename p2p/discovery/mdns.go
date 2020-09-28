@@ -119,8 +119,9 @@ func (m *mdnsService) Close() error {
 }
 
 func (m *mdnsService) pollForEntries(ctx context.Context) {
-
 	ticker := time.NewTicker(m.interval)
+	defer ticker.Stop()
+
 	for {
 		//execute mdns query right away at method call and then with every tick
 		entriesCh := make(chan *mdns.ServiceEntry, 16)
@@ -140,7 +141,7 @@ func (m *mdnsService) pollForEntries(ctx context.Context) {
 
 		err := mdns.Query(qp)
 		if err != nil {
-			log.Error("mdns lookup error: ", err)
+			log.Warnw("mdns lookup error", "error", err)
 		}
 		close(entriesCh)
 		log.Debug("mdns query complete")
@@ -156,7 +157,7 @@ func (m *mdnsService) pollForEntries(ctx context.Context) {
 }
 
 func (m *mdnsService) handleEntry(e *mdns.ServiceEntry) {
-	log.Debugf("Handling MDNS entry: %s:%d %s", e.AddrV4, e.Port, e.Info)
+	log.Debugf("Handling MDNS entry: [IPv4 %s][IPv6 %s]:%d %s", e.AddrV4, e.AddrV6, e.Port, e.Info)
 	mpeer, err := peer.IDB58Decode(e.Info)
 	if err != nil {
 		log.Warning("Error parsing peer ID from mdns entry: ", err)
@@ -168,8 +169,18 @@ func (m *mdnsService) handleEntry(e *mdns.ServiceEntry) {
 		return
 	}
 
+	var addr net.IP
+	if e.AddrV4 != nil {
+		addr = e.AddrV4
+	} else if e.AddrV6 != nil {
+		addr = e.AddrV6
+	} else {
+		log.Warning("Error parsing multiaddr from mdns entry: no IP address found")
+		return
+	}
+
 	maddr, err := manet.FromNetAddr(&net.TCPAddr{
-		IP:   e.AddrV4,
+		IP:   addr,
 		Port: e.Port,
 	})
 	if err != nil {

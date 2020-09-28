@@ -5,18 +5,28 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/libp2p/go-libp2p-core/mux"
 	"github.com/libp2p/go-libp2p-core/network"
 	protocol "github.com/libp2p/go-libp2p-core/protocol"
 )
 
+var streamCounter int64
+
 // stream implements network.Stream
 type stream struct {
+	notifLk sync.Mutex
+
+	rstream *stream
+	conn    *conn
+	id      int64
+
 	write     *io.PipeWriter
 	read      *io.PipeReader
-	conn      *conn
 	toDeliver chan *transportObject
 
 	reset  chan struct{}
@@ -29,7 +39,6 @@ type stream struct {
 	stat     network.Stat
 }
 
-var ErrReset error = errors.New("stream reset")
 var ErrClosed error = errors.New("stream closed")
 
 type transportObject struct {
@@ -37,10 +46,22 @@ type transportObject struct {
 	arrivalTime time.Time
 }
 
-func NewStream(w *io.PipeWriter, r *io.PipeReader, dir network.Direction) *stream {
+func newStreamPair() (*stream, *stream) {
+	ra, wb := io.Pipe()
+	rb, wa := io.Pipe()
+
+	sa := newStream(wa, ra, network.DirOutbound)
+	sb := newStream(wb, rb, network.DirInbound)
+	sa.rstream = sb
+	sb.rstream = sa
+	return sa, sb
+}
+
+func newStream(w *io.PipeWriter, r *io.PipeReader, dir network.Direction) *stream {
 	s := &stream{
 		read:      r,
 		write:     w,
+		id:        atomic.AddInt64(&streamCounter, 1),
 		reset:     make(chan struct{}, 1),
 		close:     make(chan struct{}, 1),
 		closed:    make(chan struct{}),
@@ -68,6 +89,10 @@ func (s *stream) Write(p []byte) (n int, err error) {
 	case s.toDeliver <- &transportObject{msg: cpy, arrivalTime: t}:
 	}
 	return len(p), nil
+}
+
+func (s *stream) ID() string {
+	return strconv.FormatInt(s.id, 10)
 }
 
 func (s *stream) Protocol() protocol.ID {
@@ -98,8 +123,8 @@ func (s *stream) Close() error {
 
 func (s *stream) Reset() error {
 	// Cancel any pending reads/writes with an error.
-	s.write.CloseWithError(ErrReset)
-	s.read.CloseWithError(ErrReset)
+	s.write.CloseWithError(mux.ErrReset)
+	s.read.CloseWithError(mux.ErrReset)
 
 	select {
 	case s.reset <- struct{}{}:
@@ -117,10 +142,6 @@ func (s *stream) teardown() {
 
 	// Mark as closed.
 	close(s.closed)
-
-	s.conn.net.notifyAll(func(n network.Notifiee) {
-		n.ClosedStream(s.conn.net, s)
-	})
 }
 
 func (s *stream) Conn() network.Conn {
@@ -206,7 +227,7 @@ func (s *stream) transport() {
 				case s.reset <- struct{}{}:
 				default:
 				}
-				return ErrReset
+				return mux.ErrReset
 			}
 			if err := drainBuf(); err != nil {
 				return err
@@ -226,14 +247,14 @@ func (s *stream) transport() {
 		// Reset takes precedent.
 		select {
 		case <-s.reset:
-			s.writeErr = ErrReset
+			s.writeErr = mux.ErrReset
 			return
 		default:
 		}
 
 		select {
 		case <-s.reset:
-			s.writeErr = ErrReset
+			s.writeErr = mux.ErrReset
 			return
 		case <-s.close:
 			if err := drainBuf(); err != nil {

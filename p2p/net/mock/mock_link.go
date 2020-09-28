@@ -1,13 +1,13 @@
 package mocknet
 
 import (
-	//	"fmt"
-	"io"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
+
+	process "github.com/jbenet/goprocess"
 )
 
 // link implements mocknet.Link
@@ -33,24 +33,16 @@ func (l *link) newConnPair(dialer *peernet) (*conn, *conn) {
 	l.RLock()
 	defer l.RUnlock()
 
-	c1 := newConn(l.nets[0], l.nets[1], l, network.DirOutbound)
-	c2 := newConn(l.nets[1], l.nets[0], l, network.DirInbound)
-	c1.rconn = c2
-	c2.rconn = c1
-
-	if dialer == c1.net {
-		return c1, c2
+	parent := process.WithTeardown(func() error { return nil })
+	target := l.nets[0]
+	if target == dialer {
+		target = l.nets[1]
 	}
-	return c2, c1
-}
-
-func (l *link) newStreamPair() (*stream, *stream) {
-	ra, wb := io.Pipe()
-	rb, wa := io.Pipe()
-
-	sa := NewStream(wa, ra, network.DirOutbound)
-	sb := NewStream(wb, rb, network.DirInbound)
-	return sa, sb
+	dc := newConn(parent, dialer, target, l, network.DirOutbound)
+	tc := newConn(parent, target, dialer, l, network.DirInbound)
+	dc.rconn = tc
+	tc.rconn = dc
+	return dc, tc
 }
 
 func (l *link) Networks() []network.Network {

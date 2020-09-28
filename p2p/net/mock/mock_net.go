@@ -46,11 +46,14 @@ type mocknet struct {
 }
 
 func New(ctx context.Context) Mocknet {
+	proc := goprocessctx.WithContext(ctx)
+	ctx = goprocessctx.WithProcessClosing(ctx, proc)
+
 	return &mocknet{
 		nets:  map[peer.ID]*peernet{},
 		hosts: map[peer.ID]*bhost.BasicHost{},
 		links: map[peer.ID]map[peer.ID]map[*link]struct{}{},
-		proc:  goprocessctx.WithContext(ctx),
+		proc:  proc,
 		ctx:   ctx,
 	}
 }
@@ -104,7 +107,8 @@ func (mn *mocknet) AddPeerWithPeerstore(p peer.ID, ps peerstore.Peerstore) (host
 	}
 
 	opts := &bhost.HostOpts{
-		NegotiationTimeout: -1,
+		NegotiationTimeout:      -1,
+		DisableSignedPeerRecord: true,
 	}
 
 	h, err := bhost.NewHost(mn.ctx, n, opts)
